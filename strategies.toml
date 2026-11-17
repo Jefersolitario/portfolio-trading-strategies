@@ -1,0 +1,7 @@
+# One [[source]] per strategy repository. `root` is where that repository publishes the results contract:
+# an https URL, a gs:// prefix (needs gcsfs and a [gcp_service_account] secret) or a local folder.
+# Adding a strategy to the dashboard = adding a source here. Strategy ids must be unique across sources.
+
+[[source]]
+name = "fear-greed-strategy"
+root = "https://raw.githubusercontent.com/Jefersolitario/fear-greed-strategy/main/results"
