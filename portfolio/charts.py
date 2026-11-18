@@ -29,30 +29,46 @@ def fold_other(long: pl.DataFrame, colours: dict[str, str]) -> tuple[pl.DataFram
     return long, {**{n: colours[n] for n in keep}, label: OTHER}
 
 
-def stacked_cumulative(long: pl.DataFrame, colours: dict[str, str], currency: str = "USD") -> alt.Chart:
+def stacked_cumulative(long: pl.DataFrame | None, colours: dict[str, str], currency: str = "USD",
+                       monitors: pl.DataFrame | None = None) -> alt.Chart:
+    """Portfolio strategies as stacked areas with their total; monitored strategies as dashed lines outside the stack."""
     alt.data_transformers.disable_max_rows()
-    long, colours = fold_other(long, colours)
-    order = {n: i for i, n in enumerate(colours)}
-    df = long.with_columns(pl.col("strategy").replace_strict(order, default=99).alias("rank")).to_pandas()
-    total = long.group_by("date").agg(pl.col("cum_pnl").sum().alias("total")).sort("date").to_pandas()
-    money = alt.Axis(format="$~s", title=f"Cumulative PnL ({currency})", gridColor=GRID, domain=False, tickSize=0, labelColor=INK2, titleColor=INK2)
-    span = (long["date"].max() - long["date"].min()).days
+    has_port = long is not None and long.height > 0
+    has_mon = monitors is not None and monitors.height > 0
+    used: dict[str, str] = {}
+    if has_port:
+        long, used = fold_other(long, colours)
+    if has_mon:
+        monitors = monitors.with_columns((pl.col("strategy") + " (monitoring)").alias("label"))
+        for name in monitors["strategy"].unique(maintain_order=True).to_list():
+            used[f"{name} (monitoring)"] = colours.get(name, OTHER)
+    both = [f.select("date") for f in (long if has_port else None, monitors if has_mon else None) if f is not None]
+    all_dates = pl.concat(both)["date"]
+    span = (all_dates.max() - all_dates.min()).days
     fmt, ticks = ("%Y", "year") if span > 800 else (("%b %Y", "month") if span > 100 else ("%d %b", "week"))
+    money = alt.Axis(format="$~s", title=f"Cumulative PnL ({currency})", gridColor=GRID, domain=False, tickSize=0, labelColor=INK2, titleColor=INK2)
     time = alt.Axis(title=None, grid=False, domainColor=GRID, tickColor=GRID, labelColor=INK2, format=fmt, tickCount=ticks, labelOverlap=True)
-    # Vega-Lite stacks positive and negative values on separate sides of zero, so a losing strategy
-    # sits below the axis instead of eating into the winners.
-    area = alt.Chart(df).mark_area(opacity=0.88, line={"strokeWidth": 1, "color": "#fcfcfb"}).encode(
-        x=alt.X("date:T", axis=time),
-        y=alt.Y("cum_pnl:Q", stack="zero", axis=money),
-        color=alt.Color("strategy:N", scale=alt.Scale(domain=list(colours), range=list(colours.values())),
-                        legend=alt.Legend(title=None, orient="top", labelColor=INK, labelLimit=400, symbolType="square")),
-        order=alt.Order("rank:Q"),
-        tooltip=[alt.Tooltip("date:T", title="Date"), alt.Tooltip("strategy:N", title="Strategy"),
-                 alt.Tooltip("cum_pnl:Q", title="Cumulative PnL", format="$,.0f")],
-    )
-    line = alt.Chart(total).mark_line(color=INK, strokeWidth=2).encode(
-        x="date:T", y="total:Q",
-        tooltip=[alt.Tooltip("date:T", title="Date"), alt.Tooltip("total:Q", title="Portfolio total", format="$,.0f")],
-    )
-    zero = alt.Chart(pl.DataFrame({"y": [0.0]}).to_pandas()).mark_rule(color=INK2, strokeWidth=1).encode(y="y:Q")
-    return (area + zero + line).properties(height=420).configure_view(strokeWidth=0)
+    colour = alt.Color("label:N", scale=alt.Scale(domain=list(used), range=list(used.values())),
+                       legend=alt.Legend(title=None, orient="top", labelColor=INK, labelLimit=400, symbolType="square", columns=1))
+    layers = []
+    if has_port:
+        order = {n: i for i, n in enumerate(used)}
+        df = long.with_columns(pl.col("strategy").alias("label"), pl.col("strategy").replace_strict(order, default=99).alias("rank")).to_pandas()
+        total = long.group_by("date").agg(pl.col("cum_pnl").sum().alias("total")).sort("date").to_pandas()
+        # Vega-Lite stacks positive and negative values on separate sides of zero, so a losing strategy
+        # sits below the axis instead of eating into the winners.
+        layers.append(alt.Chart(df).mark_area(opacity=0.88, line={"strokeWidth": 1, "color": "#fcfcfb"}).encode(
+            x=alt.X("date:T", axis=time), y=alt.Y("cum_pnl:Q", stack="zero", axis=money), color=colour, order=alt.Order("rank:Q"),
+            tooltip=[alt.Tooltip("date:T", title="Date"), alt.Tooltip("strategy:N", title="Strategy"),
+                     alt.Tooltip("cum_pnl:Q", title="Cumulative PnL", format="$,.0f")]))
+    layers.append(alt.Chart(pl.DataFrame({"y": [0.0]}).to_pandas()).mark_rule(color=INK2, strokeWidth=1).encode(y="y:Q"))
+    if has_port:
+        layers.append(alt.Chart(total).mark_line(color=INK, strokeWidth=2).encode(
+            x="date:T", y="total:Q",
+            tooltip=[alt.Tooltip("date:T", title="Date"), alt.Tooltip("total:Q", title="Portfolio total", format="$,.0f")]))
+    if has_mon:
+        layers.append(alt.Chart(monitors.to_pandas()).mark_line(strokeDash=[6, 4], strokeWidth=2).encode(
+            x=alt.X("date:T", axis=time), y=alt.Y("cum_pnl:Q", stack=None, axis=money), color=colour, detail="strategy:N",
+            tooltip=[alt.Tooltip("date:T", title="Date"), alt.Tooltip("label:N", title="Strategy"),
+                     alt.Tooltip("cum_pnl:Q", title="Cumulative PnL", format="$,.0f")]))
+    return alt.layer(*layers).properties(height=420).configure_view(strokeWidth=0)

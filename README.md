@@ -3,7 +3,7 @@
 One dashboard for every trading strategy that publishes the daily-PnL results contract. Backtests and paper
 trading for now; the same contract carries live results later.
 
-- **Filters:** record (paper trading or backtest), one or many strategies, date range with quick ranges.
+- **Filters:** record (paper trading or backtest), portfolio strategies, monitored strategies, date range with quick ranges.
 - **Headline:** PnL, Sharpe, Sortino and max drawdown of the selected strategies combined, for the range.
 - **Chart:** cumulative PnL stacked by strategy, re-based to zero at the start of the range, with the
   portfolio total as a line.
@@ -18,6 +18,13 @@ streamlit run app.py
 
 To host it, deploy this repository on Streamlit Community Cloud with `app.py` as the entry point. Public
 sources need no secrets.
+
+## Portfolio and monitoring
+
+A strategy's manifest can carry `"role": "monitor"`. A monitored strategy is published and paper traded like any
+other, and the dashboard shows it for comparison: a dashed line on the chart, its own row in the tables and its own
+selector in the sidebar. It is never added to the portfolio figures at the top or to the total line. A manifest without
+a role, or with `"role": "portfolio"`, is a portfolio strategy.
 
 ## Add a strategy
 
@@ -38,7 +45,7 @@ Strategy ids must be unique across sources.
 ```
 <root>/index.json                   {"contract_version": 1, "strategies": ["id", ...], "data_through": ..., "updated_utc": ...}
 <root>/backtest_summary.parquet     optional; one row per tested variant, shown as published
-<root>/<strategy_id>/manifest.json  id, name, market, currency, days_per_year, paper_start, ...
+<root>/<strategy_id>/manifest.json  id, name, market, currency, days_per_year, paper_start, role, ...
 <root>/<strategy_id>/daily.parquet  one row per UTC day
 ```
 

@@ -11,12 +11,16 @@ from portfolio import charts, loader, metrics
 D0 = dt.date(2026, 1, 1)
 
 
-def _write_source(root: pathlib.Path, strategies: dict[str, list[float]], mode: str = "backtest", start: dt.date = D0) -> None:
+def _write_source(root: pathlib.Path, strategies: dict[str, list[float]], mode: str = "backtest", start: dt.date = D0,
+                  roles: dict[str, str] | None = None) -> None:
     root.mkdir(parents=True, exist_ok=True)
     (root / "index.json").write_text(json.dumps({"contract_version": 1, "strategies": list(strategies), "data_through": "2026-01-10"}))
     for sid, pnl in strategies.items():
         (root / sid).mkdir(exist_ok=True)
-        (root / sid / "manifest.json").write_text(json.dumps({"id": sid, "name": sid.upper(), "currency": "USD", "days_per_year": 365}))
+        manifest = {"id": sid, "name": sid.upper(), "currency": "USD", "days_per_year": 365}
+        if roles and sid in roles:
+            manifest["role"] = roles[sid]
+        (root / sid / "manifest.json").write_text(json.dumps(manifest))
         pl.DataFrame({"date": [start + dt.timedelta(days=i) for i in range(len(pnl))], "mode": [mode] * len(pnl), "pnl": pnl,
                       "capital": [1000.0] * len(pnl), "n_trades": [1] * len(pnl)},
                      schema_overrides={"n_trades": pl.Int32}).write_parquet(root / sid / "daily.parquet")
@@ -102,3 +106,32 @@ def test_app_renders(config, monkeypatch):
     at.multiselect[0].set_value(["gamma"]).run()
     assert not at.exception
     assert at.metric[0].value == "$200"
+
+
+def test_monitored_strategies_are_shown_but_stay_out_of_the_portfolio_figures(tmp_path, monkeypatch):
+    from streamlit.testing.v1 import AppTest
+
+    _write_source(tmp_path / "a", {"alpha": [10, -5, 20, -40, 15], "beta": [-1, -2, -3, 4, 5], "watch": [100, 100, 100, 100, 100]}, roles={"watch": "monitor"})
+    cfg = tmp_path / "strategies.toml"
+    cfg.write_text('[[source]]\nname = "a"\nroot = "a"\n')
+    monkeypatch.setenv("PORTFOLIO_CONFIG", str(cfg))
+    at = AppTest.from_file(str(pathlib.Path(__file__).resolve().parents[1] / "app.py"), default_timeout=30).run()
+    assert not at.exception
+    assert [m.label for m in at.multiselect] == ["Portfolio strategies", "Monitoring only"]
+    assert at.multiselect[0].options == ["ALPHA", "BETA"] and at.multiselect[1].value == ["watch"]
+    assert at.metric[0].value == "$3"                         # alpha 0 + beta 3; the monitored 500 is not counted
+    table = at.dataframe[0].value
+    assert dict(zip(table["Strategy"], table["Role"])) == {"ALPHA": "Portfolio", "BETA": "Portfolio", "WATCH": "Monitoring"}
+    at.multiselect[0].set_value([]).run()                     # monitoring alone still renders, with no portfolio figures
+    assert not at.exception
+    assert at.metric[0].value == "$0"
+
+
+def test_chart_builds_with_monitor_lines_and_without_a_portfolio():
+    names = ["A", "B"]
+    cm = charts.colour_map(names)
+    port = pl.DataFrame({"date": [D0, D0 + dt.timedelta(days=1)], "strategy_id": ["a", "a"], "strategy": ["A", "A"], "cum_pnl": [1.0, 2.0]})
+    mon = pl.DataFrame({"date": [D0, D0 + dt.timedelta(days=1)], "strategy_id": ["b", "b"], "strategy": ["B", "B"], "cum_pnl": [3.0, 1.0]})
+    spec = charts.stacked_cumulative(port, cm, monitors=mon).to_dict()
+    assert len(spec["layer"]) == 4                            # area, zero line, total, dashed monitor line
+    assert charts.stacked_cumulative(None, cm, monitors=mon).to_dict()["layer"][-1]["mark"]["strokeDash"] == [6, 4]
