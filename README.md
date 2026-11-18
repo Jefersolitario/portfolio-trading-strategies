@@ -1,13 +1,17 @@
 # portfolio-trading-strategies
 
-One dashboard for every trading strategy that publishes the daily-PnL results contract. Backtests and paper
-trading for now; the same contract carries live results later.
+One dashboard for every trading strategy that publishes the daily-PnL results contract.
 
-- **Filters:** record (paper trading or backtest), portfolio strategies, monitored strategies, date range with quick ranges.
-- **Headline:** PnL, Sharpe, Sortino and max drawdown of the selected strategies combined, for the range.
+**The page shows the record since go-live only**: paper trading now, live trading later. Backtests are hindsight;
+they appear in one reference table at the bottom and never in the chart or the figures.
+
+- **Filters:** portfolio strategies, monitored strategies, date range with quick ranges.
+- **Headline:** PnL, Sharpe, Sortino and max drawdown of the portfolio strategies combined, for the range.
+  Sharpe and Sortino appear once the range covers 30 days; before that they would be noise.
 - **Chart:** cumulative PnL stacked by strategy, re-based to zero at the start of the range, with the
-  portfolio total as a line.
-- **Tables:** the same statistics per strategy with data freshness, and each strategy's backtest results.
+  portfolio total as a line and monitored strategies as dashed lines.
+- **Tables:** the same statistics per strategy with money at risk and data freshness, then each strategy's
+  backtest results for reference.
 
 ## Run it
 
@@ -68,7 +72,8 @@ reports its own Sharpe: every statistic on the page is computed here, the same w
 - A day without a row counts as zero PnL. The combined figures use the calendar from the first to the last
   day any selected strategy has data in the range.
 
-Backtest and paper trading are never joined into one curve: a backtest is hindsight, paper trading is not.
+Only `paper` and `live` rows reach the chart and the figures. `backtest` rows are ignored by the page: a backtest is
+hindsight, and its summary is shown once, in the reference table.
 
 ## Reading from Google Cloud Storage
 

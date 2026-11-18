@@ -11,7 +11,7 @@ from portfolio import charts, loader, metrics
 D0 = dt.date(2026, 1, 1)
 
 
-def _write_source(root: pathlib.Path, strategies: dict[str, list[float]], mode: str = "backtest", start: dt.date = D0,
+def _write_source(root: pathlib.Path, strategies: dict[str, list[float]], mode: str = "paper", start: dt.date = D0,
                   roles: dict[str, str] | None = None) -> None:
     root.mkdir(parents=True, exist_ok=True)
     (root / "index.json").write_text(json.dumps({"contract_version": 1, "strategies": list(strategies), "data_through": "2026-01-10"}))
@@ -62,21 +62,21 @@ def test_loader_reads_every_source_and_reports_broken_ones(config):
 
 def test_wide_daily_fills_zeros_and_respects_the_range(config):
     p = loader.load_all(config)
-    w = metrics.wide_daily(p.daily, ["alpha", "gamma"], "backtest", D0, D0 + dt.timedelta(days=30))
+    w = metrics.wide_daily(p.daily, ["alpha", "gamma"], "paper", D0, D0 + dt.timedelta(days=30))
     assert w.columns == ["date", "alpha", "gamma"]
     assert w.height == 5
     assert w["gamma"].to_list() == [0, 0, 0, 100, 100]        # no row before its first day -> zero PnL
     total = w.select(pl.sum_horizontal("alpha", "gamma")).to_series()
     assert total.sum() == pytest.approx(200)
-    narrow = metrics.wide_daily(p.daily, ["alpha"], "backtest", D0 + dt.timedelta(days=1), D0 + dt.timedelta(days=2))
+    narrow = metrics.wide_daily(p.daily, ["alpha"], "paper", D0 + dt.timedelta(days=1), D0 + dt.timedelta(days=2))
     assert narrow["alpha"].to_list() == [-5, 20]
-    assert metrics.wide_daily(p.daily, ["alpha"], "paper", D0, D0 + dt.timedelta(days=30)).height == 0
+    assert metrics.wide_daily(p.daily, ["alpha"], "backtest", D0, D0 + dt.timedelta(days=30)).height == 0
 
 
 def test_portfolio_pnl_is_the_sum_of_the_strategies(config):
     p = loader.load_all(config)
     ids = ["alpha", "beta", "gamma"]
-    w = metrics.wide_daily(p.daily, ids, "backtest", D0, D0 + dt.timedelta(days=30))
+    w = metrics.wide_daily(p.daily, ids, "paper", D0, D0 + dt.timedelta(days=30))
     total = metrics.stats(w.select(pl.sum_horizontal(ids)).to_series().to_numpy())["pnl"]
     assert total == pytest.approx(sum(metrics.stats(w[i].to_numpy())["pnl"] for i in ids))
     long = metrics.cumulative_long(w, {i: i.upper() for i in ids})
@@ -134,4 +134,54 @@ def test_chart_builds_with_monitor_lines_and_without_a_portfolio():
     mon = pl.DataFrame({"date": [D0, D0 + dt.timedelta(days=1)], "strategy_id": ["b", "b"], "strategy": ["B", "B"], "cum_pnl": [3.0, 1.0]})
     spec = charts.stacked_cumulative(port, cm, monitors=mon).to_dict()
     assert len(spec["layer"]) == 4                            # area, zero line, total, dashed monitor line
-    assert charts.stacked_cumulative(None, cm, monitors=mon).to_dict()["layer"][-1]["mark"]["strokeDash"] == [6, 4]
+    last = charts.stacked_cumulative(None, cm, monitors=mon).to_dict()["layer"][-1]["mark"]
+    assert last["strokeDash"] == [6, 4] and last["point"]     # a two-day record is drawn with visible points
+
+
+def test_page_shows_only_the_record_since_go_live(tmp_path, monkeypatch):
+    """Backtest rows never reach the chart or the figures; ratios wait for 30 days of record."""
+    from streamlit.testing.v1 import AppTest
+
+    root = tmp_path / "a"
+    _write_source(root, {"alpha": [1.0] * 400}, mode="backtest", start=dt.date(2025, 1, 1))      # history: +400
+    paper = pl.DataFrame({"date": [D0 + dt.timedelta(days=i) for i in range(5)], "mode": ["paper"] * 5, "pnl": [0.0, 0.0, -1.0, 6.0, 5.0],
+                          "capital": [0.0, 0.0, 999.0, 1005.0, 1010.0], "n_trades": [0, 0, 1, 0, 0]}, schema_overrides={"n_trades": pl.Int32})
+    both = pl.concat([pl.read_parquet(root / "alpha" / "daily.parquet"), paper.select(pl.read_parquet(root / "alpha" / "daily.parquet").columns)])
+    both.write_parquet(root / "alpha" / "daily.parquet")
+    cfg = tmp_path / "strategies.toml"
+    cfg.write_text('[[source]]\nname = "a"\nroot = "a"\n')
+    monkeypatch.setenv("PORTFOLIO_CONFIG", str(cfg))
+    at = AppTest.from_file(str(pathlib.Path(__file__).resolve().parents[1] / "app.py"), default_timeout=30).run()
+    assert not at.exception
+    assert len(at.radio) == 0                                 # no backtest switch
+    assert at.metric[0].value == "$10"                        # paper days only, not the +400 of history
+    assert at.metric[1].value == "–" and at.metric[2].value == "–"   # five days: no Sharpe or Sortino yet
+    assert at.metric[3].value == "-$1"
+    assert any("since 2026-01-01" in c.value for c in at.caption)
+    table = at.dataframe[0].value
+    assert table["Trades"].tolist() == [1] and table["At risk now (USD)"].tolist() == [1010]
+
+
+def test_before_the_first_paper_day_the_page_says_so_and_still_shows_the_backtest_table(tmp_path, monkeypatch):
+    from streamlit.testing.v1 import AppTest
+
+    _write_source(tmp_path / "a", {"alpha": [1.0, 2.0, 3.0]}, mode="backtest")
+    cfg = tmp_path / "strategies.toml"
+    cfg.write_text('[[source]]\nname = "a"\nroot = "a"\n')
+    monkeypatch.setenv("PORTFOLIO_CONFIG", str(cfg))
+    at = AppTest.from_file(str(pathlib.Path(__file__).resolve().parents[1] / "app.py"), default_timeout=30).run()
+    assert not at.exception
+    assert len(at.metric) == 0 and any("No paper trading days" in i.value for i in at.info)
+    assert len(at.dataframe) == 1                             # the backtest reference table
+
+
+def test_ratios_appear_after_thirty_days(tmp_path, monkeypatch):
+    from streamlit.testing.v1 import AppTest
+
+    _write_source(tmp_path / "a", {"alpha": [3.0, -1.0] * 20})
+    cfg = tmp_path / "strategies.toml"
+    cfg.write_text('[[source]]\nname = "a"\nroot = "a"\n')
+    monkeypatch.setenv("PORTFOLIO_CONFIG", str(cfg))
+    at = AppTest.from_file(str(pathlib.Path(__file__).resolve().parents[1] / "app.py"), default_timeout=30).run()
+    assert not at.exception
+    assert at.metric[1].value not in ("–", "") and float(at.metric[1].value) > 0
