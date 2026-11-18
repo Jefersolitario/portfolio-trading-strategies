@@ -62,6 +62,10 @@ if daily.height == 0:
 
 names = {sid: m.get("name", sid) for sid, m in data.manifests.items()}
 all_ids = list(names)
+# role "monitor": published for comparison only. It is shown, and it never enters the portfolio figures.
+roles = {sid: ("monitor" if m.get("role") == "monitor" else "portfolio") for sid, m in data.manifests.items()}
+portfolio_ids = [x for x in all_ids if roles[x] == "portfolio"]
+monitor_ids = [x for x in all_ids if roles[x] == "monitor"]
 colours = charts.colour_map([names[s] for s in all_ids])
 present = [label for label, m in MODES.items() if (daily["mode"] == m).any()]
 if "Paper trading" not in present:
@@ -74,7 +78,11 @@ with st.sidebar:
     mode_label = st.radio("Record", present, index=present.index(default_mode),
                           help="Backtest is hindsight. Paper trading is what the rules did on days nobody had seen. They are never mixed in one curve.")
     mode = MODES[mode_label]
-    selected = st.multiselect("Strategies", options=all_ids, default=all_ids, format_func=lambda s: names[s])
+    selected = st.multiselect("Portfolio strategies", options=portfolio_ids, default=portfolio_ids, format_func=lambda s: names[s])
+    watched = []
+    if monitor_ids:
+        watched = st.multiselect("Monitoring only", options=monitor_ids, default=monitor_ids, format_func=lambda s: names[s],
+                                 help="Shown for comparison as dashed lines. Never included in the portfolio figures.")
     in_mode = daily.filter(pl.col("mode") == mode)
     if in_mode.height:
         dmin, dmax = in_mode["date"].min(), in_mode["date"].max()
@@ -100,7 +108,8 @@ if in_mode.height == 0:
             + (f" Paper books start on {', '.join(starts)}." if mode == "paper" and starts else "")
             + " Switch the record to Backtest in the sidebar to see the history.")
     st.stop()
-if not selected:
+shown = selected + watched
+if not shown:
     st.info("Select at least one strategy in the sidebar.")
     st.stop()
 if not isinstance(picked, (tuple, list)) or len(picked) != 2:
@@ -108,17 +117,21 @@ if not isinstance(picked, (tuple, list)) or len(picked) != 2:
     st.stop()
 start, end = picked
 
-wide = metrics.wide_daily(daily, selected, mode, start, end)
+wide = metrics.wide_daily(daily, shown, mode, start, end)
 if wide.height == 0:
     st.info("The selected strategies have no rows in this date range.")
     st.stop()
 
 # ---------------------------------------------------------------- headline
-currencies = sorted({data.manifests[s].get("currency", "USD") for s in selected})
-days_per_year = max(int(data.manifests[s].get("days_per_year", 365)) for s in selected)
-total = wide.select(pl.sum_horizontal(selected)).to_series().to_numpy()
+currencies = sorted({data.manifests[s].get("currency", "USD") for s in shown})
+days_per_year = max(int(data.manifests[s].get("days_per_year", 365)) for s in shown)
+# the portfolio figures use the portfolio strategies only
+total = wide.select(pl.sum_horizontal(selected)).to_series().to_numpy() if selected else []
 s = metrics.stats(total, days_per_year)
-st.caption(f"{mode_label} · {len(selected)} of {len(all_ids)} strategies · {wide['date'].min()} to {wide['date'].max()} · {s['days']:,} days")
+st.caption(f"{mode_label} · {len(selected)} of {len(portfolio_ids)} portfolio strategies · {wide['date'].min()} to {wide['date'].max()} · {wide.height:,} days"
+           + (f" · {len(watched)} monitored, not counted in these figures" if watched else ""))
+if not selected:
+    st.info("No portfolio strategy is selected, so there are no portfolio figures. Monitored strategies are shown below.")
 if len(currencies) > 1:
     st.warning(f"The selection mixes currencies ({', '.join(currencies)}). Totals add them without conversion.")
 c1, c2, c3, c4 = st.columns(4)
@@ -129,23 +142,25 @@ c4.metric("Max drawdown", money(-s["max_dd"]), help="Largest peak-to-trough fall
 
 # ---------------------------------------------------------------- chart
 st.subheader("Cumulative PnL")
-long = metrics.cumulative_long(wide, names)
-st.altair_chart(charts.stacked_cumulative(long, colours, currencies[0]), width="stretch")
-st.caption("Areas are stacked by strategy and start at zero on the first day of the range. The black line is the portfolio total. "
-           "A strategy with a loss is drawn below zero.")
+long = metrics.cumulative_long(wide.select("date", *selected), names) if selected else None
+long_watch = metrics.cumulative_long(wide.select("date", *watched), names) if watched else None
+st.altair_chart(charts.stacked_cumulative(long, colours, currencies[0], monitors=long_watch), width="stretch")
+st.caption("Areas are stacked by portfolio strategy and start at zero on the first day of the range. The black line is the portfolio total. "
+           "A strategy with a loss is drawn below zero."
+           + (" Dashed lines are monitored strategies: shown for comparison, not part of the total." if watched else ""))
 
 # ---------------------------------------------------------------- per strategy
 st.subheader("By strategy")
 today = dt.datetime.now(dt.timezone.utc).date()
 cur = currencies[0]
 rows = []
-for sid in selected:
+for sid in shown:
     part = daily.filter((pl.col("strategy_id") == sid) & (pl.col("mode") == mode) & pl.col("date").is_between(start, end)).sort("date")
     dpy = int(data.manifests[sid].get("days_per_year", 365))
     r = metrics.stats(wide[sid].to_numpy(), dpy)
     last = part["date"].max() if part.height else None
     rows.append({
-        "Strategy": names[sid], f"PnL ({cur})": round(r["pnl"]), "Sharpe": r["sharpe"], "Sortino": r["sortino"],
+        "Strategy": names[sid], "Role": "Monitoring" if roles[sid] == "monitor" else "Portfolio", f"PnL ({cur})": round(r["pnl"]), "Sharpe": r["sharpe"], "Sortino": r["sortino"],
         f"Max drawdown ({cur})": -round(r["max_dd"]),
         "Sharpe per $ at risk": metrics.sharpe_per_dollar(part["pnl"].to_numpy(), part["capital"].to_numpy(), dpy) if part.height else None,
         "Trades": int(part["n_trades"].fill_null(0).sum()) if part.height else 0,
@@ -160,7 +175,7 @@ st.dataframe(pl.DataFrame(rows).to_pandas(), hide_index=True, width="stretch", c
     "Data through": st.column_config.DateColumn(format="YYYY-MM-DD"),
     "Sharpe per $ at risk": st.column_config.NumberColumn(format="%.2f", help="Sharpe of daily PnL ÷ money at risk the day before. Fairer for rules that keep adding to a position."),
 })
-st.caption("Each row uses the same calendar as the portfolio above, with zero PnL on days a strategy has no row.")
+st.caption("Each row uses the same calendar as the chart, with zero PnL on days a strategy has no row. Monitoring rows are not part of the portfolio figures.")
 
 # ---------------------------------------------------------------- backtest results
 st.subheader("Backtest results")
@@ -172,11 +187,13 @@ else:
         show_all = st.toggle("Include tested variants that are not in the portfolio", value=True)
         if not show_all:
             t = t.filter(pl.col("strategy_id").is_in(all_ids))
-    labels = {"name": "Strategy", "paper_traded": "In portfolio", "buys": "Trades", "pnl": "PnL", "return_pct": "Return %", "sharpe": "Sharpe",
+    labels = {"name": "Strategy", "role": "Role", "paper_traded": "Paper traded", "buys": "Trades", "pnl": "PnL", "return_pct": "Return %", "sharpe": "Sharpe",
               "sortino": "Sortino", "max_dd": "Max drawdown", "sharpe_per_dollar": "Sharpe per $ at risk", "placebo_p": "Placebo p",
               "put_in": "Money in", "start": "From", "end": "To", "source": "Source"}
     if "max_dd" in t.columns:
         t = t.with_columns(-pl.col("max_dd"))
+    if "role" in t.columns:
+        t = t.with_columns(pl.col("role").replace({"portfolio": "Portfolio", "monitor": "Monitoring", "tested": "Tested only"}))
     t = t.with_columns([pl.col(c).round(0).cast(pl.Int64) for c in ("pnl", "max_dd", "put_in") if c in t.columns])
     t = t.select([c for c in labels if c in t.columns] + [c for c in t.columns if c not in labels and c != "strategy_id"]).rename(
         {k: v for k, v in labels.items() if k in t.columns})
