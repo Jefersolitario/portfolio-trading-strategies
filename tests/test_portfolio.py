@@ -233,3 +233,24 @@ def test_a_weekday_feed_is_not_called_stale_over_a_weekend():
     assert metrics.is_stale(friday, dt.date(2026, 11, 26), days_per_year=252)
     assert metrics.is_stale(friday, dt.date(2026, 11, 24), days_per_year=365)              # a daily feed four days old is stale
     assert not metrics.is_stale(friday, dt.date(2026, 11, 23), days_per_year=365)
+
+
+def test_ratios_wait_for_enough_days_of_the_series_they_are_computed_from(tmp_path, monkeypatch):
+    """A young portfolio strategy beside a long-running monitored one: no headline ratio from three days, and each row judged on its own."""
+    from streamlit.testing.v1 import AppTest
+
+    young = [5.0, -2.0, 4.0]
+    watch = [3.0, -1.0, 2.0, 1.0] * 10
+    _write_source(tmp_path / "a", {"watch": watch}, roles={"watch": "monitor"})
+    _write_source(tmp_path / "b", {"young": young}, start=D0 + dt.timedelta(days=37))
+    cfg = tmp_path / "strategies.toml"
+    cfg.write_text('[[source]]\nname = "a"\nroot = "a"\n\n[[source]]\nname = "b"\nroot = "b"\n')
+    monkeypatch.setenv("PORTFOLIO_CONFIG", str(cfg))
+    at = AppTest.from_file(str(pathlib.Path(__file__).resolve().parents[1] / "app.py"), default_timeout=30).run()
+    assert not at.exception
+    paper = at.tabs[0]
+    assert paper.metric[0].value == "$7" and paper.metric[1].value == "–" and paper.metric[2].value == "–"
+    assert any("it has 3" in c.value for c in paper.caption)
+    table = paper.dataframe[0].value.set_index("Strategy")
+    assert table.loc["WATCH", "Sharpe"] == pytest.approx(metrics.stats(watch, 365)["sharpe"])
+    assert table.loc["YOUNG", "Sharpe"] != table.loc["YOUNG", "Sharpe"]            # blank: three days are not enough

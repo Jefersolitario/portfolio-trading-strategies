@@ -107,7 +107,7 @@ def record_view(mode: str, label: str) -> None:
     own_days = metrics.active_days(daily, selected, mode, start, end)
     total = wide.filter(pl.col("date").is_in(own_days)).select(pl.sum_horizontal(selected)).to_series().to_numpy() if selected else []
     s = metrics.stats(total, days_per_year)
-    enough = wide.height >= MIN_DAYS_FOR_RATIOS
+    enough = len(total) >= MIN_DAYS_FOR_RATIOS             # the portfolio's own days, the series the ratios are computed from
     since = f"{label} since {dmin}" if mode != "backtest" else "Backtest (hindsight)"
     st.caption(f"{since} · {len(selected)} of {len(portfolio_ids)} portfolio strategies · {wide['date'].min()} to {wide['date'].max()} · "
                f"{wide.height:,} day{'' if wide.height == 1 else 's'}" + (f" · {len(watched)} monitored, not counted in these figures" if watched else ""))
@@ -115,14 +115,14 @@ def record_view(mode: str, label: str) -> None:
         st.info("No portfolio strategy is selected, so there are no portfolio figures. Monitored strategies are shown below.")
     if len(currencies) > 1:
         st.warning(f"The selection mixes currencies ({', '.join(currencies)}). Totals add them without conversion.")
-    too_few = f" Shown once the range has {MIN_DAYS_FOR_RATIOS} days."
+    too_few = f" Shown once the portfolio has {MIN_DAYS_FOR_RATIOS} days in the range."
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("PnL", money(s["pnl"]))
     c2.metric("Sharpe", ratio(s["sharpe"] if enough else None), help=f"Mean ÷ standard deviation of daily PnL × √{days_per_year}." + too_few)
     c3.metric("Sortino", ratio(s["sortino"] if enough else None), help=f"Mean ÷ downside deviation of daily PnL × √{days_per_year}." + too_few)
     c4.metric("Max drawdown", money(-s["max_dd"]), help="Largest peak-to-trough fall of cumulative PnL in the period.")
-    if not enough:
-        st.caption(f"Sharpe and Sortino appear once the range covers {MIN_DAYS_FOR_RATIOS} days; this one covers {wide.height}.")
+    if not enough and selected:
+        st.caption(f"Sharpe and Sortino appear once the portfolio has {MIN_DAYS_FOR_RATIOS} days in the range; it has {len(total)}.")
 
     # ---- chart
     st.subheader("Cumulative PnL")
@@ -159,7 +159,7 @@ def record_view(mode: str, label: str) -> None:
     whole = st.column_config.NumberColumn(format="localized")
     two = st.column_config.NumberColumn(format="%.2f")
     table = pl.DataFrame(rows, infer_schema_length=None)
-    if not enough:                                        # no ratios yet: leave the columns out instead of showing blanks
+    if table["Sharpe"].null_count() == table.height:      # no strategy has enough days yet: leave the columns out instead of showing blanks
         table = table.drop("Sharpe", "Sortino", "Sharpe per $ at risk")
     st.dataframe(table.to_pandas(), hide_index=True, width="stretch", key=f"table_{mode}", column_config={
         f"PnL ({cur})": whole, f"Max drawdown ({cur})": whole, f"At risk now ({cur})": whole, "Sharpe": two, "Sortino": two, "Trades": whole,
