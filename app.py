@@ -102,8 +102,10 @@ def record_view(mode: str, label: str) -> None:
 
     # ---- headline: portfolio strategies only
     currencies = sorted({data.manifests[s].get("currency", "USD") for s in shown})
-    days_per_year = max(int(data.manifests[s].get("days_per_year", 365)) for s in shown)
-    total = wide.select(pl.sum_horizontal(selected)).to_series().to_numpy() if selected else []
+    days_per_year = max(int(data.manifests[s].get("days_per_year", 365)) for s in (selected or shown))
+    # days on which no selected strategy published a row (weekends, for a book of weekday-only strategies) are not part of its record
+    own_days = metrics.active_days(daily, selected, mode, start, end)
+    total = wide.filter(pl.col("date").is_in(own_days)).select(pl.sum_horizontal(selected)).to_series().to_numpy() if selected else []
     s = metrics.stats(total, days_per_year)
     enough = wide.height >= MIN_DAYS_FOR_RATIOS
     since = f"{label} since {dmin}" if mode != "backtest" else "Backtest (hindsight)"
@@ -139,18 +141,19 @@ def record_view(mode: str, label: str) -> None:
     for sid in shown:
         part = daily.filter((pl.col("strategy_id") == sid) & (pl.col("mode") == mode) & pl.col("date").is_between(start, end)).sort("date")
         dpy = int(data.manifests[sid].get("days_per_year", 365))
-        r = metrics.stats(wide[sid].to_numpy(), dpy)
+        r = metrics.stats(part["pnl"].to_numpy(), dpy)        # the strategy's own days: calendars differ (crypto trades every day, shares do not)
+        ripe = part.height >= MIN_DAYS_FOR_RATIOS
         last = part["date"].max() if part.height else None
         row = {
             "Strategy": names[sid], "Role": "Monitoring" if roles[sid] == "monitor" else "Portfolio", f"PnL ({cur})": round(r["pnl"]),
-            "Sharpe": r["sharpe"], "Sortino": r["sortino"], f"Max drawdown ({cur})": -round(r["max_dd"]),
-            "Sharpe per $ at risk": metrics.sharpe_per_dollar(part["pnl"].to_numpy(), part["capital"].to_numpy(), dpy) if part.height else None,
+            "Sharpe": r["sharpe"] if ripe else None, "Sortino": r["sortino"] if ripe else None, f"Max drawdown ({cur})": -round(r["max_dd"]),
+            "Sharpe per $ at risk": metrics.sharpe_per_dollar(part["pnl"].to_numpy(), part["capital"].to_numpy(), dpy) if ripe else None,
             "Trades": int(part["n_trades"].fill_null(0).sum()) if part.height else 0,
         }
         if mode != "backtest":                            # a live record: what is at risk now, and is the feed fresh
             row[f"At risk now ({cur})"] = round(part["capital"].fill_null(0)[-1]) if part.height else 0
             row["Data through"] = last
-            row["Status"] = "no rows" if last is None else ("stale" if (today - last).days > STALE_AFTER_DAYS else "ok")
+            row["Status"] = "no rows" if last is None else ("stale" if metrics.is_stale(last, today, dpy, STALE_AFTER_DAYS) else "ok")
         row["Source"] = data.manifests[sid].get("source", "")
         rows.append(row)
     whole = st.column_config.NumberColumn(format="localized")
@@ -163,7 +166,7 @@ def record_view(mode: str, label: str) -> None:
         "Data through": st.column_config.DateColumn(format="YYYY-MM-DD"),
         "Sharpe per $ at risk": st.column_config.NumberColumn(format="%.2f", help="Sharpe of daily PnL ÷ money at risk the day before. Fairer for rules that keep adding to a position."),
     })
-    st.caption("Each row uses the same calendar as the chart, with zero PnL on days a strategy has no row. Monitoring rows are not part of the portfolio figures.")
+    st.caption("Each row uses the strategy's own published days and its own days per year. Monitoring rows are not part of the portfolio figures.")
 
 
 def backtest_summary() -> None:
@@ -179,7 +182,10 @@ def backtest_summary() -> None:
             t = t.filter(pl.col("strategy_id").is_in(all_ids))
     labels = {"name": "Strategy", "role": "Role", "paper_traded": "Paper traded", "buys": "Trades", "pnl": "PnL", "return_pct": "Return %",
               "sharpe": "Sharpe", "sortino": "Sortino", "max_dd": "Max drawdown", "sharpe_per_dollar": "Sharpe per $ at risk",
-              "placebo_p": "Placebo p", "put_in": "Money in", "start": "From", "end": "To", "source": "Source"}
+              "placebo_p": "Placebo p", "put_in": "Money in", "start": "From", "end": "To", "source": "Source",
+              # optional extras a strategy may publish
+              "sharpe_vs_bills": "Sharpe over T-bills", "max_dd_pct": "Max drawdown %", "closed": "Closed trades", "wins": "Winning trades",
+              "beta_spy": "Beta to SPY", "alpha_pct_yr": "Alpha % a year", "alpha_t": "Alpha t-stat"}
     if "max_dd" in t.columns:
         t = t.with_columns(-pl.col("max_dd"))
     if "role" in t.columns:
@@ -193,6 +199,9 @@ def backtest_summary() -> None:
     st.dataframe(t.to_pandas(), hide_index=True, width="stretch", key="table_summary", column_config={
         "PnL": whole, "Money in": whole, "Max drawdown": whole, "Trades": whole, "From": day, "To": day,
         "Return %": st.column_config.NumberColumn(format="%.0f%%"), "Sharpe": two, "Sortino": two, "Sharpe per $ at risk": two,
+        "Sharpe over T-bills": two, "Beta to SPY": two, "Max drawdown %": st.column_config.NumberColumn(format="%.1f%%"),
+        "Alpha % a year": st.column_config.NumberColumn(format="%.1f%%", help="Return left after the exposure to SPY is taken out."),
+        "Alpha t-stat": st.column_config.NumberColumn(format="%.2f", help="Below about 2, the alpha is not distinguishable from zero."),
         "Placebo p": st.column_config.NumberColumn(format="%.2f", help="Share of random date-shifts of the trades that did at least as well. Small is good; above 0.05 is not evidence of an edge."),
     })
     st.caption("As published by each strategy for its full backtest period. These figures do not change with the date range.")

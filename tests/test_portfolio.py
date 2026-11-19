@@ -191,3 +191,45 @@ def test_ratios_appear_after_thirty_days(tmp_path, monkeypatch):
     at = AppTest.from_file(str(pathlib.Path(__file__).resolve().parents[1] / "app.py"), default_timeout=30).run()
     assert not at.exception
     assert at.metric[1].value not in ("–", "") and float(at.metric[1].value) > 0
+
+
+def test_each_strategy_is_measured_on_its_own_calendar(tmp_path, monkeypatch):
+    """A weekday-only strategy that starts later is not diluted by the days it never traded."""
+    from streamlit.testing.v1 import AppTest
+
+    every_day = [3.0, -1.0, 2.0] * 40
+    _write_source(tmp_path / "a", {"crypto": every_day})                                   # 365-day calendar from 1 Jan 2026
+    start = dt.date(2026, 2, 2)                                                            # a Monday
+    days = [d for d in (start + dt.timedelta(days=i) for i in range(80)) if d.weekday() < 5]
+    shares = ([5.0, -2.0, 4.0, -1.0, 3.0] * 12)[:len(days)]
+    root = tmp_path / "b"; (root / "shares").mkdir(parents=True)
+    (root / "index.json").write_text(json.dumps({"contract_version": 1, "strategies": ["shares"], "data_through": str(days[-1])}))
+    (root / "shares" / "manifest.json").write_text(json.dumps({"id": "shares", "name": "SHARES", "currency": "USD", "days_per_year": 252}))
+    pl.DataFrame({"date": days, "mode": ["paper"] * len(days), "pnl": shares, "capital": [1000.0] * len(days), "n_trades": [0] * len(days)},
+                 schema_overrides={"n_trades": pl.Int32}).write_parquet(root / "shares" / "daily.parquet")
+    cfg = tmp_path / "strategies.toml"
+    cfg.write_text('[[source]]\nname = "a"\nroot = "a"\n\n[[source]]\nname = "b"\nroot = "b"\n')
+    monkeypatch.setenv("PORTFOLIO_CONFIG", str(cfg))
+    at = AppTest.from_file(str(pathlib.Path(__file__).resolve().parents[1] / "app.py"), default_timeout=30).run()
+    assert not at.exception
+    table = at.tabs[0].dataframe[0].value.set_index("Strategy")
+    assert table.loc["SHARES", "Sharpe"] == pytest.approx(metrics.stats(shares, 252)["sharpe"])
+    assert table.loc["CRYPTO", "Sharpe"] == pytest.approx(metrics.stats(every_day, 365)["sharpe"])
+    assert table.loc["SHARES", "PnL (USD)"] == round(sum(shares))
+    # the portfolio total still adds both on the shared calendar, where the crypto strategy has a row every day
+    both = np.array(every_day); both[[(d - D0).days for d in days]] += np.array(shares)
+    assert float(at.tabs[0].metric[1].value) == pytest.approx(metrics.stats(both, 365)["sharpe"], abs=0.006)
+
+    # with only the weekday strategy selected, weekends are not part of the record
+    at.multiselect[0].set_value(["shares"]).run()
+    assert not at.exception
+    assert float(at.tabs[0].metric[1].value) == pytest.approx(metrics.stats(shares, 252)["sharpe"], abs=0.006)
+
+
+def test_a_weekday_feed_is_not_called_stale_over_a_weekend():
+    friday = dt.date(2026, 11, 20)
+    assert not metrics.is_stale(friday, dt.date(2026, 11, 24), days_per_year=252)          # Tuesday morning, before Monday's row lands
+    assert not metrics.is_stale(friday, dt.date(2026, 11, 25), days_per_year=252)          # after a Monday holiday
+    assert metrics.is_stale(friday, dt.date(2026, 11, 26), days_per_year=252)
+    assert metrics.is_stale(friday, dt.date(2026, 11, 24), days_per_year=365)              # a daily feed four days old is stale
+    assert not metrics.is_stale(friday, dt.date(2026, 11, 23), days_per_year=365)

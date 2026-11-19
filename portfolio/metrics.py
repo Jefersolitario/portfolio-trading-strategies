@@ -42,6 +42,18 @@ def sharpe_per_dollar(daily_pnl, capital, days_per_year: int = 365) -> float | N
     return float(r.mean() / r.std(ddof=1) * np.sqrt(days_per_year))
 
 
+def active_days(daily: pl.DataFrame, strategy_ids: list[str], mode: str, start: dt.date, end: dt.date) -> list[dt.date]:
+    """Days in [start, end] on which at least one of the strategies published a row."""
+    sel = daily.filter(pl.col("strategy_id").is_in(strategy_ids) & (pl.col("mode") == mode) & pl.col("date").is_between(start, end))
+    return sel["date"].unique().sort().to_list()
+
+
+def is_stale(last: dt.date, today: dt.date, days_per_year: int = 365, limit: int = 3) -> bool:
+    """A feed is stale when its last day is more than `limit` days old. A weekday-only calendar gets two more days:
+    Friday's row is still the latest on Tuesday morning, and on Wednesday morning after a Monday holiday."""
+    return (today - last).days > (limit if days_per_year >= 300 else limit + 2)
+
+
 def wide_daily(daily: pl.DataFrame, strategy_ids: list[str], mode: str, start: dt.date, end: dt.date) -> pl.DataFrame:
     """One row per calendar day, one PnL column per strategy, zeros where a strategy has no row.
 
