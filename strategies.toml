@@ -5,3 +5,7 @@
 [[source]]
 name = "fear-greed-strategy"
 root = "https://raw.githubusercontent.com/Jefersolitario/fear-greed-strategy/main/results"
+
+[[source]]
+name = "all-in-tracker"
+root = "https://raw.githubusercontent.com/Jefersolitario/All-In-tracker/main/results"

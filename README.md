@@ -1,13 +1,23 @@
 # portfolio-trading-strategies
 
-One dashboard for every trading strategy that publishes the daily-PnL results contract. Backtests and paper
-trading for now; the same contract carries live results later.
+One dashboard for every trading strategy that publishes the daily-PnL results contract.
 
-- **Filters:** record (paper trading or backtest), portfolio strategies, monitored strategies, date range with quick ranges.
-- **Headline:** PnL, Sharpe, Sortino and max drawdown of the selected strategies combined, for the range.
+The page has two tabs that never mix:
+
+- **Paper trading:** the record since go-live. This is the default tab. A **Live trading** tab appears when a
+  strategy publishes live days.
+- **Backtest:** hindsight. The same views over the backtest period, plus the table of every tested variant.
+
+Each tab has:
+
+- **Date range** with quick ranges, set per tab.
+- **Headline:** PnL, Sharpe, Sortino and max drawdown of the portfolio strategies combined, for the range.
+  Sharpe and Sortino appear once the range covers 30 days; before that they would be noise.
 - **Chart:** cumulative PnL stacked by strategy, re-based to zero at the start of the range, with the
-  portfolio total as a line.
-- **Tables:** the same statistics per strategy with data freshness, and each strategy's backtest results.
+  portfolio total as a line and monitored strategies as dashed lines.
+- **Table:** the same statistics per strategy; in the paper and live tabs also money at risk and data freshness.
+
+The sidebar chooses the portfolio strategies and the monitored strategies for all tabs.
 
 ## Run it
 
@@ -65,10 +75,13 @@ reports its own Sharpe: every statistic on the page is computed here, the same w
 - **Max drawdown:** largest peak-to-trough fall of cumulative PnL in the range; the curve starts at zero.
 - **Sharpe per $ at risk:** Sharpe of daily PnL ÷ the previous day's `capital`. Shown when `capital` is
   published. It is the fairer number for rules that keep adding to a position.
-- A day without a row counts as zero PnL. The combined figures use the calendar from the first to the last
-  day any selected strategy has data in the range.
+- **Calendars differ.** A crypto strategy has a row every day, a share strategy only on sessions. Each strategy's
+  row in the table is computed on its own published days with its own `days_per_year`. The combined figures use
+  every day on which at least one selected strategy published a row, and a strategy without a row that day
+  counts as zero.
+- A feed is marked stale after 3 days without a new row, or 5 for a weekday-only strategy.
 
-Backtest and paper trading are never joined into one curve: a backtest is hindsight, paper trading is not.
+Each tab reads one `mode` only, so `backtest` rows never reach the paper or live record and the other way round.
 
 ## Reading from Google Cloud Storage
 

@@ -45,7 +45,8 @@ def stacked_cumulative(long: pl.DataFrame | None, colours: dict[str, str], curre
     both = [f.select("date") for f in (long if has_port else None, monitors if has_mon else None) if f is not None]
     all_dates = pl.concat(both)["date"]
     span = (all_dates.max() - all_dates.min()).days
-    fmt, ticks = ("%Y", "year") if span > 800 else (("%b %Y", "month") if span > 100 else ("%d %b", "week"))
+    fmt, ticks = ("%Y", "year") if span > 800 else (("%b %Y", "month") if span > 100 else (("%d %b", "week") if span > 14 else ("%d %b", "day")))
+    few = all_dates.n_unique() <= 10                      # a record a few days old: draw the days as points so they are visible
     money = alt.Axis(format="$~s", title=f"Cumulative PnL ({currency})", gridColor=GRID, domain=False, tickSize=0, labelColor=INK2, titleColor=INK2)
     time = alt.Axis(title=None, grid=False, domainColor=GRID, tickColor=GRID, labelColor=INK2, format=fmt, tickCount=ticks, labelOverlap=True)
     colour = alt.Color("label:N", scale=alt.Scale(domain=list(used), range=list(used.values())),
@@ -63,11 +64,11 @@ def stacked_cumulative(long: pl.DataFrame | None, colours: dict[str, str], curre
                      alt.Tooltip("cum_pnl:Q", title="Cumulative PnL", format="$,.0f")]))
     layers.append(alt.Chart(pl.DataFrame({"y": [0.0]}).to_pandas()).mark_rule(color=INK2, strokeWidth=1).encode(y="y:Q"))
     if has_port:
-        layers.append(alt.Chart(total).mark_line(color=INK, strokeWidth=2).encode(
+        layers.append(alt.Chart(total).mark_line(color=INK, strokeWidth=2, point={"color": INK, "size": 50} if few else False).encode(
             x="date:T", y="total:Q",
             tooltip=[alt.Tooltip("date:T", title="Date"), alt.Tooltip("total:Q", title="Portfolio total", format="$,.0f")]))
     if has_mon:
-        layers.append(alt.Chart(monitors.to_pandas()).mark_line(strokeDash=[6, 4], strokeWidth=2).encode(
+        layers.append(alt.Chart(monitors.to_pandas()).mark_line(strokeDash=[6, 4], strokeWidth=2, point={"size": 50} if few else False).encode(
             x=alt.X("date:T", axis=time), y=alt.Y("cum_pnl:Q", stack=None, axis=money), color=colour, detail="strategy:N",
             tooltip=[alt.Tooltip("date:T", title="Date"), alt.Tooltip("label:N", title="Strategy"),
                      alt.Tooltip("cum_pnl:Q", title="Cumulative PnL", format="$,.0f")]))
