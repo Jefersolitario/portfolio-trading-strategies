@@ -235,6 +235,13 @@ def test_a_weekday_feed_is_not_called_stale_over_a_weekend():
     assert not metrics.is_stale(friday, dt.date(2026, 11, 23), days_per_year=365)
 
 
+def test_a_weekly_feed_is_stale_only_after_a_missed_week():
+    monday = dt.date(2026, 11, 23)                                                          # one row a week, dated Monday
+    assert not metrics.is_stale(monday, dt.date(2026, 11, 29), days_per_year=52)            # the Sunday after
+    assert not metrics.is_stale(monday, dt.date(2026, 12, 1), days_per_year=52)             # next Monday's row is a day late
+    assert metrics.is_stale(monday, dt.date(2026, 12, 2), days_per_year=52)                 # a week was missed
+
+
 def test_ratios_wait_for_enough_days_of_the_series_they_are_computed_from(tmp_path, monkeypatch):
     """A young portfolio strategy beside a long-running monitored one: no headline ratio from three days, and each row judged on its own."""
     from streamlit.testing.v1 import AppTest

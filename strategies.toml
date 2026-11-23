@@ -9,3 +9,7 @@ root = "https://raw.githubusercontent.com/Jefersolitario/fear-greed-strategy/mai
 [[source]]
 name = "all-in-tracker"
 root = "https://raw.githubusercontent.com/Jefersolitario/All-In-tracker/main/results"
+
+[[source]]
+name = "tokenized-stocks-arbitrage"
+root = "https://raw.githubusercontent.com/Jefersolitario/tokenized-stocks-arbitrage/main/dashboard"
