@@ -50,7 +50,10 @@ def active_days(daily: pl.DataFrame, strategy_ids: list[str], mode: str, start: 
 
 def is_stale(last: dt.date, today: dt.date, days_per_year: int = 365, limit: int = 3) -> bool:
     """A feed is stale when its last day is more than `limit` days old. A weekday-only calendar gets two more days:
-    Friday's row is still the latest on Tuesday morning, and on Wednesday morning after a Monday holiday."""
+    Friday's row is still the latest on Tuesday morning, and on Wednesday morning after a Monday holiday. A strategy with
+    one row a week (fewer than 100 periods a year) is stale once more than a week and a day has passed."""
+    if days_per_year < 100:
+        return (today - last).days > 8
     return (today - last).days > (limit if days_per_year >= 300 else limit + 2)
 
 
